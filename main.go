@@ -2,10 +2,9 @@ package main
 
 import (
 	"flag"
-	"io"
 	"log"
 	"net"
-	"unsafe"
+	"net/http"
 
 	"github.com/gorilla/websocket"
 )
@@ -32,39 +31,52 @@ var addr = flag.String("addr", "localhost:8080", "http service address")
 var upgrader = websocket.Upgrader{} // use default options
 const SOCK_ADDRESS = "/tmp/Vortoj-Packet.sock"
 
+var datachannel = make(chan []byte)
+
 func main() {
+	flag.Parse()
 	log.SetFlags(log.Lshortfile)
 
 	conn, err := net.Dial("unix", SOCK_ADDRESS)
 	if err != nil {
 		panic(err)
 	}
-	data := make([]byte, 0)
-	for {
-		println("starting packetserver")
-		packetbuff := Packet{}
-		println(unsafe.Sizeof(packetbuff))
-		buf := make([]byte, 500)
-		nr, err := conn.Read(buf)
-		println("starting redding")
 
-		if err != nil {
-			if err != io.EOF {
-				log.Printf("error: %v", err)
+	go func(conn net.Conn) {
+		for {
+			buf := make([]byte, 500)
+			nr, err := conn.Read(buf)
+			if err != nil {
+				log.Printf("error: %v\n", err)
+				break
 			}
+			buf = buf[:nr]
+			datachannel <- buf
+			log.Printf("receive: %s\n", buf)
+		}
+	}(conn)
+
+	http.HandleFunc("/sample", ServerDataAll)
+	log.Fatal(http.ListenAndServe(*addr, nil))
+}
+
+func ServerDataAll(w http.ResponseWriter, r *http.Request) {
+	c, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Print("upgrade:", err)
+		return
+	}
+	defer c.Close()
+	// mt, message, err := c.ReadMessage()
+	// if err != nil {
+	// 	log.Println("read:", err)
+	// }
+	for {
+		message := <-datachannel
+		err = c.WriteMessage(websocket.TextMessage, message)
+		if err != nil {
+			log.Println("write:", err)
 			break
 		}
-
-		buf = buf[:nr]
-		log.Printf("receive: %s\n", buf)
-		data = append(data, buf...)
 	}
-	log.Printf("send: %s\n", string(append(data, data...)))
-
-	// flag.Parse()
-	// log.SetFlags(0)
-
-	//http.HandleFunc("/statuses/sample", ServerDataAll)
-	//http.HandleFunc("/", home)
-	//log.Fatal(http.ListenAndServe(*addr, nil))
 }
